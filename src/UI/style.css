@@ -41,6 +41,15 @@ html, body {
 	display: block;
 }
 
+.secondary-bottom-button,
+.retry-button {
+	bottom: 80px;
+}
+
+#pause-button {
+	color: black !important;
+}
+
 #stop-button {
 	color: black !important;
 }
@@ -172,7 +181,7 @@ hr {
 }
 
 #log-view {
-	height: calc(100% - 480px);
+	height: calc(100% - 540px);
 	border: 1px solid #cfd8dc;
 	white-space: pre;
 	overflow-wrap: normal;

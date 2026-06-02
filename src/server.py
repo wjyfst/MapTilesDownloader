@@ -377,7 +377,7 @@ def parse_args():
 	)
 	parser.add_argument(
 		"--port",
-		default=int(os.environ.get("MTD_PORT", "8080")),
+		default=int(os.environ.get("MTD_PORT", "8085")),
 		type=int,
 		help="TCP port to listen on.",
 	)

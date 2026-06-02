@@ -9,14 +9,21 @@ $(function() {
 
 	var cancellationToken = null;
 	var requests = [];
+	var currentDownload = null;
+	var isDownloadActive = false;
+	var downloadEnded = false;
+	var isDownloadPaused = false;
+	var resumeCallbacks = [];
 
 	var chinaDarkSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=4&scene=0&version=347";
-	var chinaDarkPreviewSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&styleid=4&scene=0&version=347";
-
+	var chinaLightSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=0&scene=0&version=347";
+	var chinaPreviewSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&styleid=0&scene=0&version=347";
+    var GeoQLightSource = "https://thematic.geoq.cn/arcgis/rest/services/ChinaOnlineStreetGray/MapServer/tile/{z}/{y}/{x}"
 	var sources = {
 
 		"Tencent Dark Chinese": chinaDarkSource,
-
+        "Tencent Light Chinese": chinaLightSource,
+        "GeoQ": GeoQLightSource,
 		"div-0": "",
 
 		"Bing Maps": "http://ecn.t0.tiles.virtualearth.net/tiles/r{quad}.jpeg?g=129&mkt=en&stl=H",
@@ -42,11 +49,96 @@ $(function() {
 
 	};
 
+	function getMapPreviewSource(url) {
+		if(!url || url.indexOf("{quad}") >= 0) {
+			return null;
+		}
+
+		var previewUrl = url;
+		var scheme = "xyz";
+
+		if(previewUrl.indexOf("{tmsY}") >= 0) {
+			previewUrl = previewUrl.split("{tmsY}").join("{y}");
+			scheme = "tms";
+		}
+
+		return {
+			url: previewUrl,
+			scheme: scheme
+		};
+	}
+
+	function getFirstOverlayLayerId() {
+		var style = map.getStyle();
+		if(!style || !style.layers) {
+			return null;
+		}
+
+		for(var i = 0; i < style.layers.length; i++) {
+			var id = style.layers[i].id;
+			if(id.indexOf("gl-draw-") == 0 || id == "grid-preview" || id.indexOf("temp-") == 0) {
+				return id;
+			}
+		}
+
+		return null;
+	}
+
+	function updateMapTileSource(url) {
+		var previewSource = getMapPreviewSource(url);
+		if(!previewSource) {
+			M.toast({html: 'This tile source cannot be previewed on the map.', displayLength: 5000});
+			return;
+		}
+
+		if(!map) {
+			return;
+		}
+
+		if(!map.isStyleLoaded()) {
+			map.once('load', function() {
+				updateMapTileSource(url);
+			});
+			return;
+		}
+
+		if(map.getLayer('osm-tiles')) {
+			map.removeLayer('osm-tiles');
+		}
+		if(map.getSource('osm')) {
+			map.removeSource('osm');
+		}
+
+		map.addSource('osm', {
+			type: 'raster',
+			tiles: [previewSource.url],
+			tileSize: 256,
+			scheme: previewSource.scheme
+		});
+
+		var rasterLayer = {
+			id: 'osm-tiles',
+			type: 'raster',
+			source: 'osm'
+		};
+		var firstOverlayLayerId = getFirstOverlayLayerId();
+
+		if(firstOverlayLayerId) {
+			map.addLayer(rasterLayer, firstOverlayLayerId);
+		} else {
+			map.addLayer(rasterLayer);
+		}
+	}
+
 	function initializeMap() {
 
 		// A Mapbox token is only required if you want the search/geocoder feature to work.
 		// Get a free token at https://account.mapbox.com/ and replace the empty string below.
 		mapboxgl.accessToken = '';
+		var initialPreviewSource = getMapPreviewSource($("#source-box").val()) || {
+			url: chinaPreviewSource,
+			scheme: "tms"
+		};
 
 		map = new mapboxgl.Map({
 			container: 'map-view',
@@ -55,9 +147,9 @@ $(function() {
 				sources: {
 					'osm': {
 						type: 'raster',
-						tiles: [chinaDarkPreviewSource],
+						tiles: [initialPreviewSource.url],
 						tileSize: 256,
-						scheme: 'tms',
+						scheme: initialPreviewSource.scheme,
 						attribution: 'Tencent Maps'
 					}
 				},
@@ -67,7 +159,7 @@ $(function() {
 					source: 'osm'
 				}]
 			},
-			center: [-73.983652, 40.755024],
+			center: [118.7915619, 32.0615513],
 			zoom: 12
 		});
 
@@ -103,10 +195,15 @@ $(function() {
 			item.click(function() {
 				var url = $(this).attr("data-url");
 				$("#source-box").val(url);
+				updateMapTileSource(url);
 			})
 
 			dropdown.append(item);
 		}
+
+		$("#source-box").change(function() {
+			updateMapTileSource($(this).val());
+		});
 	}
 
 	function initializeSearch() {
@@ -471,6 +568,8 @@ $(function() {
 
 		$("#download-button").click(startDownloading)
 		$("#stop-button").click(stopDownloading)
+		$("#retry-failed-button").click(retryFailedTiles)
+		$("#pause-button").click(toggleDownloadPause)
 
 		var timestamp = Date.now().toString();
 		//$("#output-directory-box").val(timestamp)
@@ -506,6 +605,333 @@ $(function() {
 		return fallback;
 	}
 
+	function createDownloadFormData(session) {
+		var data = new FormData();
+		data.append('minZoom', session.minZoom)
+		data.append('maxZoom', session.maxZoom)
+		data.append('outputDirectory', session.outputDirectory)
+		data.append('outputFile', session.outputFile)
+		data.append('outputType', session.outputType)
+		data.append('outputScale', session.outputScale)
+		data.append('source', session.source)
+		data.append('timestamp', session.timestamp)
+		data.append('bounds', session.boundsArray.join(","))
+		data.append('center', session.centerArray.join(","))
+
+		return data;
+	}
+
+	function createTileFormData(session, item) {
+		var data = createDownloadFormData(session);
+		data.append('x', item.x)
+		data.append('y', item.y)
+		data.append('z', item.z)
+		data.append('quad', generateQuadKey(item.x, item.y, item.z))
+
+		return data;
+	}
+
+	function tileKey(item) {
+		return item.z + "/" + item.x + "/" + item.y;
+	}
+
+	function addFailedTile(session, item) {
+		session.failedTiles[tileKey(item)] = item;
+	}
+
+	function removeFailedTile(session, item) {
+		delete session.failedTiles[tileKey(item)];
+	}
+
+	function getFailedTileList(session) {
+		var tiles = [];
+		for(var key in session.failedTiles) {
+			tiles.push(session.failedTiles[key]);
+		}
+		return tiles;
+	}
+
+	function updateRetryButton(session) {
+		var count = session ? getFailedTileList(session).length : 0;
+		if(count > 0 && !isDownloadActive && !downloadEnded) {
+			$("#retry-failed-button").html("RETRY FAILED (" + count.toLocaleString() + ")").show();
+		} else {
+			$("#retry-failed-button").hide();
+		}
+	}
+
+	function updatePauseButton() {
+		if(isDownloadActive) {
+			$("#pause-button").html(isDownloadPaused ? "CONTINUE" : "PAUSE").show().prop("disabled", false);
+		} else {
+			$("#pause-button").hide();
+		}
+	}
+
+	function resolvePausedDownloads() {
+		var callbacks = resumeCallbacks;
+		resumeCallbacks = [];
+
+		for(var i = 0; i < callbacks.length; i++) {
+			callbacks[i]();
+		}
+	}
+
+	function waitUntilDownloadResumed(callback) {
+		if(!isDownloadPaused) {
+			callback();
+			return;
+		}
+
+		resumeCallbacks.push(callback);
+	}
+
+	function toggleDownloadPause() {
+		if(!isDownloadActive) {
+			return;
+		}
+
+		if(isDownloadPaused) {
+			isDownloadPaused = false;
+			updatePauseButton();
+			logItemRaw("Download resumed");
+			resolvePausedDownloads();
+		} else {
+			isDownloadPaused = true;
+			updatePauseButton();
+			logItemRaw("Download paused. Active requests will finish.");
+		}
+	}
+
+	function isSuccessfulTileResponse(data) {
+		return data && data.code == 200 && (data.message == "Tile Downloaded" || data.message == "Tile already exists");
+	}
+
+	function getTileFailureMessage(data) {
+		if(data && data.message == "Download failed") {
+			return data.code + " Download failed";
+		}
+		if(data && (data.code == 403 || data.code == 429)) {
+			return data.code + " Rate limited by tile server";
+		}
+		if(data && data.code) {
+			return data.code + " Error downloading tile";
+		}
+
+		return "Error downloading tile";
+	}
+
+	function setDownloadControlsRunning(text) {
+		isDownloadActive = true;
+		isDownloadPaused = false;
+		resolvePausedDownloads();
+		$("#stop-button").html(text || "STOP").prop("disabled", false);
+		$("#retry-failed-button").hide();
+		updatePauseButton();
+	}
+
+	function setDownloadControlsDone(session) {
+		isDownloadActive = false;
+		isDownloadPaused = false;
+		resolvePausedDownloads();
+		$("#stop-button").html("FINISH").prop("disabled", false);
+		updatePauseButton();
+		updateRetryButton(session);
+	}
+
+	async function downloadTileBatch(session, tiles) {
+		var completed = 0;
+		updateProgress(0, tiles.length);
+
+		return new Promise(function(resolve) {
+			async.eachLimit(tiles, session.numThreads, function(item, done) {
+
+				if(cancellationToken) {
+					done();
+					return;
+				}
+
+				waitUntilDownloadResumed(function() {
+					if(cancellationToken) {
+						done();
+						return;
+					}
+
+					var boxLayer = previewRect(item);
+					var request = $.ajax({
+						"url": "/download-tile",
+						async: true,
+						timeout: 30 * 1000,
+						type: "post",
+					    contentType: false,
+					    processData: false,
+						data: createTileFormData(session, item),
+						dataType: 'json',
+					}).done(function(data) {
+
+						if(cancellationToken) {
+							return;
+						}
+
+						if(isSuccessfulTileResponse(data)) {
+							removeFailedTile(session, item);
+							if(data.image) {
+								showTinyTile(data.image)
+							}
+							logItem(item.x, item.y, item.z, data.message);
+						} else {
+							addFailedTile(session, item);
+							var failureMessage = getTileFailureMessage(data);
+							logItem(item.x, item.y, item.z, failureMessage);
+
+							if(data && (data.code == 403 || data.code == 429) && !session.rateLimitWarned) {
+								session.rateLimitWarned = true;
+								M.toast({html: 'Tile server is rate limiting requests. Try a different source or wait a few minutes.', displayLength: 8000});
+							}
+						}
+
+					}).fail(function(data) {
+
+						if(cancellationToken) {
+							return;
+						}
+
+						addFailedTile(session, item);
+						logItem(item.x, item.y, item.z, getAjaxErrorMessage(data, "Error while relaying tile"));
+
+					}).always(function() {
+						completed++;
+
+						removeLayer(boxLayer);
+						updateProgress(completed, tiles.length);
+
+						done();
+					});
+
+					requests.push(request);
+				});
+
+			}, function() {
+				resolve();
+			});
+		});
+	}
+
+	async function finalizeDownload(session) {
+		$("#retry-failed-button").hide();
+		$("#pause-button").hide();
+		$("#stop-button").html("FINISHING...").prop("disabled", true);
+
+		await $.ajax({
+			url: "/end-download",
+			async: true,
+			timeout: 30 * 1000,
+			type: "post",
+			contentType: false,
+			processData: false,
+			data: createDownloadFormData(session),
+			dataType: 'json',
+		})
+		downloadEnded = true;
+
+		if ($("#stitch-checkbox").is(":checked")) {
+			$("#stop-button").html("STITCHING...").prop("disabled", true);
+			$("#download-phase-title").text("Stitching tiles");
+			$("#download-phase-hint").text("Building image from tiles, please wait...");
+
+			var stitchData = new FormData();
+			stitchData.append('outputDirectory', session.outputDirectory);
+			stitchData.append('timestamp', session.timestamp);
+			stitchData.append('minZoom', session.minZoom);
+			stitchData.append('maxZoom', session.maxZoom);
+
+			await $.ajax({
+				url: "/stitch-tiles",
+				async: true,
+				timeout: 30 * 1000,
+				type: "post",
+				contentType: false,
+				processData: false,
+				data: stitchData,
+				dataType: 'json',
+			});
+
+			await pollStitchStatus();
+
+			$("#download-phase-title").text("Downloading tiles");
+			$("#download-phase-hint").text("Please wait...");
+		}
+
+		$("#stop-button").html("FINISH").prop("disabled", false);
+	}
+
+	function finishDownloadView() {
+		$("#main-sidebar").show();
+		$("#download-sidebar").hide();
+		$("#retry-failed-button").hide();
+		$("#pause-button").hide();
+		removeGrid();
+		clearLogs();
+	}
+
+	async function finishDownload() {
+		if(!currentDownload || !currentDownload.started) {
+			finishDownloadView();
+			return;
+		}
+
+		try {
+			if(!downloadEnded) {
+				await finalizeDownload(currentDownload);
+			}
+			finishDownloadView();
+		} catch(xhr) {
+			var message = getAjaxErrorMessage(xhr, "Could not finish download.");
+			logItemRaw(message);
+			M.toast({html: message, displayLength: 8000});
+			setDownloadControlsDone(currentDownload);
+		}
+	}
+
+	async function retryFailedTiles() {
+		if(!currentDownload || isDownloadActive || downloadEnded) {
+			return;
+		}
+
+		var failedTiles = getFailedTileList(currentDownload);
+		if(failedTiles.length == 0) {
+			updateRetryButton(currentDownload);
+			return;
+		}
+
+		cancellationToken = false;
+		requests = [];
+		setDownloadControlsRunning("STOP");
+		logItemRaw("Retrying " + failedTiles.length.toLocaleString() + " failed tile(s)");
+
+		await downloadTileBatch(currentDownload, failedTiles);
+
+		if(cancellationToken) {
+			return;
+		}
+
+		var remaining = getFailedTileList(currentDownload).length;
+		logItemRaw(remaining.toLocaleString() + " failed tile(s) remaining");
+
+		if(remaining == 0) {
+			logItemRaw("All requests are done");
+			try {
+				await finalizeDownload(currentDownload);
+			} catch(xhr) {
+				var message = getAjaxErrorMessage(xhr, "Could not finish download.");
+				logItemRaw(message);
+				M.toast({html: message, displayLength: 8000});
+			}
+		}
+
+		setDownloadControlsDone(currentDownload);
+	}
+
 	async function startDownloading() {
 
 		if(draw.getAll().features.length == 0) {
@@ -515,191 +941,93 @@ $(function() {
 
 		cancellationToken = false;
 		requests = [];
-		var rateLimitWarned = false;
+		downloadEnded = false;
 
 		$("#main-sidebar").hide();
 		$("#download-sidebar").show();
 		$(".tile-strip").html("");
-		$("#stop-button").html("STOP");
+		$("#retry-failed-button").hide();
+		$("#pause-button").hide();
+		setDownloadControlsRunning("STOP");
 		removeGrid();
 		clearLogs();
 		M.Toast.dismissAll();
 
 		var timestamp = Date.now().toString();
-
 		var allTiles = getAllGridTiles();
-		updateProgress(0, allTiles.length);
-
-		var numThreads = parseInt($("#parallel-threads-box").val());
-		var outputDirectory = $("#output-directory-box").val();
-		var outputFile = $("#output-file-box").val();
-		var outputType = $("#output-type").val();
-		var outputScale = $("#output-scale").val();
-		var source = $("#source-box").val()
-
 		var bounds = getBounds();
-		var boundsArray = [bounds.getSouthWest().lng, bounds.getSouthWest().lat, bounds.getNorthEast().lng, bounds.getNorthEast().lat]
-		var centerArray = [bounds.getCenter().lng, bounds.getCenter().lat, getMaxZoom()]
-		
-		var data = new FormData();
-		data.append('minZoom', getMinZoom())
-		data.append('maxZoom', getMaxZoom())
-		data.append('outputDirectory', outputDirectory)
-		data.append('outputFile', outputFile)
-		data.append('outputType', outputType)
-		data.append('outputScale', outputScale)
-		data.append('source', source)
-		data.append('timestamp', timestamp)
-		data.append('bounds', boundsArray.join(","))
-		data.append('center', centerArray.join(","))
+
+		currentDownload = {
+			timestamp: timestamp,
+			allTiles: allTiles,
+			numThreads: parseInt($("#parallel-threads-box").val()),
+			outputDirectory: $("#output-directory-box").val(),
+			outputFile: $("#output-file-box").val(),
+			outputType: $("#output-type").val(),
+			outputScale: $("#output-scale").val(),
+			source: $("#source-box").val(),
+			minZoom: getMinZoom(),
+			maxZoom: getMaxZoom(),
+			boundsArray: [bounds.getSouthWest().lng, bounds.getSouthWest().lat, bounds.getNorthEast().lng, bounds.getNorthEast().lat],
+			centerArray: [bounds.getCenter().lng, bounds.getCenter().lat, getMaxZoom()],
+			failedTiles: {},
+			rateLimitWarned: false,
+			started: false
+		};
 
 		try {
-			var request = await $.ajax({
+			await $.ajax({
 				url: "/start-download",
 				async: true,
 				timeout: 30 * 1000,
 				type: "post",
 				contentType: false,
 				processData: false,
-				data: data,
+				data: createDownloadFormData(currentDownload),
 				dataType: 'json',
 			})
+			currentDownload.started = true;
 		} catch(xhr) {
 			var message = getAjaxErrorMessage(xhr, "Could not start download.");
 			logItemRaw(message);
 			M.toast({html: message, displayLength: 8000});
-			$("#stop-button").html("FINISH");
+			setDownloadControlsDone(currentDownload);
 			return;
 		}
 
-		let i = 0;
-		var iterator = async.eachLimit(allTiles, numThreads, function(item, done) {
+		await downloadTileBatch(currentDownload, allTiles);
 
-			if(cancellationToken) {
-				return;
+		if(cancellationToken) {
+			return;
+		}
+
+		var failedCount = getFailedTileList(currentDownload).length;
+		logItemRaw("All requests are done");
+
+		if(failedCount == 0) {
+			try {
+				await finalizeDownload(currentDownload);
+			} catch(xhr) {
+				var message = getAjaxErrorMessage(xhr, "Could not finish download.");
+				logItemRaw(message);
+				M.toast({html: message, displayLength: 8000});
 			}
+		} else {
+			logItemRaw(failedCount.toLocaleString() + " failed tile(s) remaining");
+		}
 
-			var boxLayer = previewRect(item);
-
-			var url = "/download-tile";
-
-			var data = new FormData();
-			data.append('x', item.x)
-			data.append('y', item.y)
-			data.append('z', item.z)
-			data.append('quad', generateQuadKey(item.x, item.y, item.z))
-			data.append('outputDirectory', outputDirectory)
-			data.append('outputFile', outputFile)
-			data.append('outputType', outputType)
-			data.append('outputScale', outputScale)
-			data.append('timestamp', timestamp)
-			data.append('source', source)
-			data.append('bounds', boundsArray.join(","))
-			data.append('center', centerArray.join(","))
-
-			var request = $.ajax({
-				"url": url,
-				async: true,
-				timeout: 30 * 1000,
-				type: "post",
-			    contentType: false,
-			    processData: false,
-				data: data,
-				dataType: 'json',
-			}).done(function(data) {
-
-				if(cancellationToken) {
-					return;
-				}
-
-				if(data.code == 200) {
-					showTinyTile(data.image)
-					logItem(item.x, item.y, item.z, data.message);
-				} else if(data.code == 403 || data.code == 429) {
-					logItem(item.x, item.y, item.z, data.code + " Rate limited by tile server");
-					if(!rateLimitWarned) {
-						rateLimitWarned = true;
-						M.toast({html: 'Tile server is rate limiting requests. Try a different source or wait a few minutes.', displayLength: 8000});
-					}
-				} else {
-					logItem(item.x, item.y, item.z, data.code + " Error downloading tile");
-				}
-
-			}).fail(function(data, textStatus, errorThrown) {
-
-				if(cancellationToken) {
-					return;
-				}
-
-				logItem(item.x, item.y, item.z, getAjaxErrorMessage(data, "Error while relaying tile"));
-				//allTiles.push(item);
-
-			}).always(function(data) {
-				i++;
-
-				removeLayer(boxLayer);
-				updateProgress(i, allTiles.length);
-
-				done();
-				
-				if(cancellationToken) {
-					return;
-				}
-			});
-
-			requests.push(request);
-
-		}, async function(err) {
-
-			var request = await $.ajax({
-				url: "/end-download",
-				async: true,
-				timeout: 30 * 1000,
-				type: "post",
-				contentType: false,
-				processData: false,
-				data: data,
-				dataType: 'json',
-			})
-
-			updateProgress(allTiles.length, allTiles.length);
-			logItemRaw("All requests are done");
-
-			if ($("#stitch-checkbox").is(":checked")) {
-				$("#stop-button").html("STITCHING...").prop("disabled", true);
-				$("#download-phase-title").text("Stitching tiles");
-				$("#download-phase-hint").text("Building image from tiles, please wait...");
-
-				var stitchData = new FormData();
-				stitchData.append('outputDirectory', outputDirectory);
-				stitchData.append('timestamp', timestamp);
-				stitchData.append('minZoom', getMinZoom());
-				stitchData.append('maxZoom', getMaxZoom());
-
-				await $.ajax({
-					url: "/stitch-tiles",
-					async: true,
-					timeout: 30 * 1000,
-					type: "post",
-					contentType: false,
-					processData: false,
-					data: stitchData,
-					dataType: 'json',
-				});
-
-				await pollStitchStatus();
-
-				$("#download-phase-title").text("Downloading tiles");
-				$("#download-phase-hint").text("Please wait...");
-				$("#stop-button").html("FINISH").prop("disabled", false);
-			} else {
-				$("#stop-button").html("FINISH");
-			}
-		});
+		setDownloadControlsDone(currentDownload);
 
 	}
 
 	function updateProgress(value, total) {
+		if(total == 0) {
+			bar.animate(1);
+			bar.setText('100<span>%</span>');
+			$("#progress-subtitle").html("0 <span>out of</span> 0")
+			return;
+		}
+
 		var progress = value / total;
 
 		bar.animate(progress);
@@ -726,7 +1054,15 @@ $(function() {
 	}
 
 	function stopDownloading() {
+		if(!isDownloadActive) {
+			finishDownload();
+			return;
+		}
+
 		cancellationToken = true;
+		isDownloadActive = false;
+		isDownloadPaused = false;
+		resolvePausedDownloads();
 
 		for(var i =0 ; i < requests.length; i++) {
 			var request = requests[i];
@@ -739,6 +1075,8 @@ $(function() {
 
 		$("#main-sidebar").show();
 		$("#download-sidebar").hide();
+		$("#retry-failed-button").hide();
+		$("#pause-button").hide();
 		removeGrid();
 		clearLogs();
 
