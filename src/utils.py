@@ -21,6 +21,8 @@ import math
 
 from PIL import Image
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class Utils:
 	
 	@staticmethod
@@ -64,10 +66,12 @@ class Utils:
 	def qualifyURL(url, x, y, z):
 
 		scale22 = 23 - (z * 2)
+		tmsY = (2 ** z) - y - 1
 
 		replaceMap = {
 			"x": str(x),
 			"y": str(y),
+			"tmsY": str(tmsY),
 			"z": str(z),
 			"scale:22": str(scale22),
 			"quad": Utils.makeQuadKey(x, y, z),
@@ -158,7 +162,7 @@ class Utils:
 			for childX, childY, childZ in childTiles:
 				
 				tempFile = Utils.randomString() + ".png"
-				tempFilePath = os.path.join("temp", tempFile)
+				tempFilePath = os.path.join(BASE_DIR, "temp", tempFile)
 
 				code = Utils.downloadFile(url, tempFilePath, childX, childY, childZ)
 

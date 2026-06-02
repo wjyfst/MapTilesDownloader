@@ -10,7 +10,14 @@ $(function() {
 	var cancellationToken = null;
 	var requests = [];
 
+	var chinaDarkSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=4&scene=0&version=347";
+	var chinaDarkPreviewSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&styleid=4&scene=0&version=347";
+
 	var sources = {
+
+		"Tencent Dark Chinese": chinaDarkSource,
+
+		"div-0": "",
 
 		"Bing Maps": "http://ecn.t0.tiles.virtualearth.net/tiles/r{quad}.jpeg?g=129&mkt=en&stl=H",
 		"Bing Maps Satellite": "http://ecn.t0.tiles.virtualearth.net/tiles/a{quad}.jpeg?g=129&mkt=en&stl=H",
@@ -48,9 +55,10 @@ $(function() {
 				sources: {
 					'osm': {
 						type: 'raster',
-						tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+						tiles: [chinaDarkPreviewSource],
 						tileSize: 256,
-						attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+						scheme: 'tms',
+						attribution: 'Tencent Maps'
 					}
 				},
 				layers: [{
@@ -481,6 +489,23 @@ $(function() {
 		strip.prepend(image)
 	}
 
+	function getAjaxErrorMessage(xhr, fallback) {
+		if(xhr && xhr.responseJSON) {
+			if(xhr.responseJSON.error) {
+				return (xhr.responseJSON.message || fallback) + ": " + xhr.responseJSON.error;
+			}
+			if(xhr.responseJSON.message) {
+				return xhr.responseJSON.message;
+			}
+		}
+
+		if(xhr && xhr.responseText) {
+			return xhr.responseText;
+		}
+
+		return fallback;
+	}
+
 	async function startDownloading() {
 
 		if(draw.getAll().features.length == 0) {
@@ -528,16 +553,24 @@ $(function() {
 		data.append('bounds', boundsArray.join(","))
 		data.append('center', centerArray.join(","))
 
-		var request = await $.ajax({
-			url: "/start-download",
-			async: true,
-			timeout: 30 * 1000,
-			type: "post",
-			contentType: false,
-			processData: false,
-			data: data,
-			dataType: 'json',
-		})
+		try {
+			var request = await $.ajax({
+				url: "/start-download",
+				async: true,
+				timeout: 30 * 1000,
+				type: "post",
+				contentType: false,
+				processData: false,
+				data: data,
+				dataType: 'json',
+			})
+		} catch(xhr) {
+			var message = getAjaxErrorMessage(xhr, "Could not start download.");
+			logItemRaw(message);
+			M.toast({html: message, displayLength: 8000});
+			$("#stop-button").html("FINISH");
+			return;
+		}
 
 		let i = 0;
 		var iterator = async.eachLimit(allTiles, numThreads, function(item, done) {
@@ -598,7 +631,7 @@ $(function() {
 					return;
 				}
 
-				logItem(item.x, item.y, item.z, "Error while relaying tile");
+				logItem(item.x, item.y, item.z, getAjaxErrorMessage(data, "Error while relaying tile"));
 				//allTiles.push(item);
 
 			}).always(function(data) {

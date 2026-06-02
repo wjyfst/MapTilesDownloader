@@ -7,6 +7,8 @@ from PIL import Image
 import io
 from utils import Utils
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class MbtilesWriter:
 	
 	def ensureDirectory(lock, directory):
@@ -14,12 +16,8 @@ class MbtilesWriter:
 		lock.acquire()
 		try:
 
-			if not os.path.exists('temp'):
-				os.makedirs('temp')
-
-			if not os.path.exists('output'):
-				os.makedirs('output')
-
+			os.makedirs(os.path.join(BASE_DIR, "temp"), exist_ok=True)
+			os.makedirs(os.path.join(BASE_DIR, "output"), exist_ok=True)
 			os.makedirs(directory, exist_ok=True)
 
 		finally:

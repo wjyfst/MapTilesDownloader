@@ -19,6 +19,12 @@ python server.py
 
 Then open up your web browser and navigate to `http://localhost:8080`. The output map tiles will be in the `src/output/{timestamp}/` directory by default.
 
+If port `8080` is already in use, choose another port:
+
+```sh
+python server.py --port 8090
+```
+
 ## Requirements
 
 Needs **Python 3.13+** and a modern web browser. Install dependencies with:

@@ -5,6 +5,8 @@ import io
 import json
 import shutil
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class FileWriter:
 
 	slicer = None
@@ -14,12 +16,8 @@ class FileWriter:
 		lock.acquire()
 		try:
 
-			if not os.path.exists('temp'):
-				os.makedirs('temp')
-
-			if not os.path.exists('output'):
-				os.makedirs('output')
-
+			os.makedirs(os.path.join(BASE_DIR, "temp"), exist_ok=True)
+			os.makedirs(os.path.join(BASE_DIR, "output"), exist_ok=True)
 			os.makedirs(directory, exist_ok=True)
 
 		finally:
@@ -48,7 +46,7 @@ class FileWriter:
 			("attribution", "EliteMapper by Visor Dynamics"),
 		]
 		
-		with open(path + "/metadata.json", 'w+') as jsonFile:
+		with open(os.path.join(path, "metadata.json"), 'w+') as jsonFile:
 			json.dump(dict(data), jsonFile)
 
 		return

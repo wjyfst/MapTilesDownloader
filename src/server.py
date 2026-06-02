@@ -24,6 +24,7 @@ import glob
 import os
 import base64
 import mimetypes
+import traceback
 
 from file_writer import FileWriter
 from mbtiles_writer import MbtilesWriter
@@ -115,13 +116,38 @@ class serverHandler(BaseHTTPRequestHandler):
 			return RepoWriter
 		elif(type == "directory"):
 			return FileWriter
+		raise ValueError("Invalid outputType: " + str(type))
+
+	def sendJson(self, result, status=200):
+		self.send_response(status)
+		self.send_header("Content-Type", "application/json")
+		self.end_headers()
+		self.wfile.write(json.dumps(result).encode('utf-8'))
+
+	def formValue(self, postvars, key):
+		if key not in postvars or len(postvars[key]) == 0:
+			raise ValueError("Missing form field: " + key)
+		return postvars[key][0]
 
 	def do_POST(self):
+		try:
+			return self._do_POST()
+		except Exception as e:
+			traceback.print_exc()
+			self.sendJson({
+				"code": 500,
+				"message": "Server error while handling " + self.path,
+				"error": str(e),
+			}, 500)
+
+	def _do_POST(self):
 
 		ctype, pdict = _parse_header(self.headers.get('Content-Type'))
+		if ctype != "multipart/form-data" or "boundary" not in pdict:
+			raise ValueError("Expected multipart/form-data POST body")
 		pdict['boundary'] = bytes(pdict['boundary'], "utf-8")
 
-		content_len = int(self.headers.get('Content-length'))
+		content_len = int(self.headers.get('Content-length', 0))
 		pdict['CONTENT-LENGTH'] = content_len
 
 		postvars = _parse_multipart(self.rfile, pdict)
@@ -197,17 +223,19 @@ class serverHandler(BaseHTTPRequestHandler):
 			return
 
 		elif parts.path == '/start-download':
-			outputType = str(postvars['outputType'][0])
-			outputScale = int(postvars['outputScale'][0])
-			outputDirectory = str(postvars['outputDirectory'][0])
-			outputFile = str(postvars['outputFile'][0])
-			minZoom = int(postvars['minZoom'][0])
-			maxZoom = int(postvars['maxZoom'][0])
-			timestamp = int(postvars['timestamp'][0])
-			bounds = str(postvars['bounds'][0])
-			boundsArray = map(float, bounds.split(","))
-			center = str(postvars['center'][0])
-			centerArray = map(float, center.split(","))
+			outputType = str(self.formValue(postvars, 'outputType'))
+			outputScale = int(self.formValue(postvars, 'outputScale'))
+			outputDirectory = str(self.formValue(postvars, 'outputDirectory'))
+			outputFile = str(self.formValue(postvars, 'outputFile'))
+			minZoom = int(self.formValue(postvars, 'minZoom'))
+			maxZoom = int(self.formValue(postvars, 'maxZoom'))
+			timestamp = int(self.formValue(postvars, 'timestamp'))
+			bounds = str(self.formValue(postvars, 'bounds'))
+			boundsArray = list(map(float, bounds.split(",")))
+			center = str(self.formValue(postvars, 'center'))
+			centerArray = list(map(float, center.split(",")))
+
+			writer = self.writerByType(outputType)
 
 			replaceMap = {
 				"timestamp": str(timestamp),
@@ -220,7 +248,7 @@ class serverHandler(BaseHTTPRequestHandler):
 
 			filePath = os.path.join(BASE_DIR, "output", outputDirectory, outputFile)
 
-			self.writerByType(outputType).addMetadata(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, outputFile, "Map Tiles Downloader via AliFlux", "png", boundsArray, centerArray, minZoom, maxZoom, "mercator", 256 * outputScale)
+			writer.addMetadata(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, outputFile, "Map Tiles Downloader via AliFlux", "png", boundsArray, centerArray, minZoom, maxZoom, "mercator", 256 * outputScale)
 
 			result = {}
 			result["code"] = 200
@@ -340,17 +368,40 @@ class serverHandler(BaseHTTPRequestHandler):
 class serverThreadedHandler(ThreadingMixIn, HTTPServer):
 	"""Handle requests in a separate thread."""
 
+def parse_args():
+	parser = argparse.ArgumentParser(description="Run the Map Tiles Downloader web UI.")
+	parser.add_argument(
+		"--host",
+		default=os.environ.get("MTD_HOST", "127.0.0.1"),
+		help="Host interface to bind to. Use 0.0.0.0 for Docker or LAN access.",
+	)
+	parser.add_argument(
+		"--port",
+		default=int(os.environ.get("MTD_PORT", "8080")),
+		type=int,
+		help="TCP port to listen on.",
+	)
+	return parser.parse_args()
+
 def run():
+	args = parse_args()
 	print('Starting Server...')
 	os.makedirs(os.path.join(BASE_DIR, "temp"), exist_ok=True)
 	os.makedirs(os.path.join(BASE_DIR, "output"), exist_ok=True)
-	server_address = ('', 8080)
-	httpd = serverThreadedHandler(server_address, serverHandler)
+	server_address = (args.host, args.port)
+	try:
+		httpd = serverThreadedHandler(server_address, serverHandler)
+	except OSError as e:
+		print(f"Could not bind to {args.host}:{args.port}: {e}")
+		print(f"Try another port, for example: python server.py --port {args.port + 1}")
+		raise SystemExit(1) from e
+
 	print('Running Server...')
 
 	# os.startfile('UI\\index.htm', 'open')
-	print("Open http://localhost:8080/ to view the application.")
+	print(f"Open http://localhost:{args.port}/ to view the application.")
 
 	httpd.serve_forever()
 
-run()
+if __name__ == "__main__":
+	run()

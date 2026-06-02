@@ -8,3 +8,4 @@ __pycache__/
 *.pyc
 *.tif
 *.tiff
+/.idea/
