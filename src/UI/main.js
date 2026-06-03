@@ -9,11 +9,16 @@ $(function() {
 
 	var cancellationToken = null;
 	var requests = [];
+	var requestSequence = 0;
 	var currentDownload = null;
 	var isDownloadActive = false;
 	var downloadEnded = false;
 	var isDownloadPaused = false;
 	var resumeCallbacks = [];
+	var TILE_BATCH_SIZE = 1000;
+	var MAX_LOG_LINES = 1000;
+	var PREVIEW_TILE_INTERVAL = 25;
+	var MAX_GRID_PREVIEW_TILES = 5000;
 
 	var chinaDarkSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=4&scene=0&version=347";
 	var chinaLightSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=0&scene=0&version=347";
@@ -49,6 +54,10 @@ $(function() {
 
 	};
 
+	function getTileScheme() {
+		return $("#tile-scheme").val() || "xyz";
+	}
+
 	function getMapPreviewSource(url) {
 		if(!url || url.indexOf("{quad}") >= 0) {
 			return null;
@@ -60,6 +69,9 @@ $(function() {
 		if(previewUrl.indexOf("{tmsY}") >= 0) {
 			previewUrl = previewUrl.split("{tmsY}").join("{y}");
 			scheme = "tms";
+		} else if(previewUrl.indexOf("{xyzY}") >= 0) {
+			previewUrl = previewUrl.split("{xyzY}").join("{y}");
+			scheme = "xyz";
 		}
 
 		return {
@@ -299,6 +311,10 @@ $(function() {
 			startDrawing();
 		})
 
+		$("#bounds-apply-button").click(function() {
+			setRectangleFromBoundsInput();
+		})
+
 	}
 
 	function startDrawing() {
@@ -308,6 +324,61 @@ $(function() {
 
 		M.Toast.dismissAll();
 		M.toast({html: 'Click two points on the map to make a rectangle.', displayLength: 7000})
+	}
+
+	function parseBoundsInputValue(selector) {
+		var value = parseFloat($(selector).val());
+		if(isNaN(value)) {
+			return null;
+		}
+
+		return value;
+	}
+
+	function setRectangleFromBoundsInput() {
+		var west = parseBoundsInputValue("#bounds-west-box");
+		var south = parseBoundsInputValue("#bounds-south-box");
+		var east = parseBoundsInputValue("#bounds-east-box");
+		var north = parseBoundsInputValue("#bounds-north-box");
+
+		if(west === null || south === null || east === null || north === null) {
+			M.toast({html: 'Enter west, south, east, and north bounds.', displayLength: 5000})
+			return;
+		}
+
+		if(west < -180 || west > 180 || east < -180 || east > 180 || south < -85.0511 || south > 85.0511 || north < -85.0511 || north > 85.0511) {
+			M.toast({html: 'Bounds are outside the supported Web Mercator range.', displayLength: 5000})
+			return;
+		}
+
+		if(west >= east || south >= north) {
+			M.toast({html: 'West must be less than east, and south must be less than north.', displayLength: 5000})
+			return;
+		}
+
+		removeGrid();
+		draw.deleteAll();
+		draw.changeMode('simple_select');
+		draw.add({
+			type: 'Feature',
+			properties: {},
+			geometry: {
+				type: 'Polygon',
+				coordinates: [[
+					[west, north],
+					[east, north],
+					[east, south],
+					[west, south],
+					[west, north]
+				]]
+			}
+		});
+
+		map.fitBounds([[west, south], [east, north]], {
+			padding: 40
+		});
+		M.Toast.dismissAll();
+		M.toast({html: 'Region bounds applied.', displayLength: 3000})
 	}
 
 	function initializeGridPreview() {
@@ -453,16 +524,79 @@ $(function() {
 		return rects
 	}
 
-	function getAllGridTiles() {
-		var allTiles = [];
+	function countGridTiles(minZoom, maxZoom) {
+		var total = 0;
 
-		for(var z = getMinZoom(); z <= getMaxZoom(); z++) {
-			var grid = getGrid(z);
-			// TODO shuffle grid via a heuristic (hamlet curve? :/)
-			allTiles = allTiles.concat(grid);
+		for(var z = minZoom; z <= maxZoom; z++) {
+			var bounds = getBounds();
+			var TY = lat2tile(bounds.getNorthEast().lat, z);
+			var LX = long2tile(bounds.getSouthWest().lng, z);
+			var BY = lat2tile(bounds.getSouthWest().lat, z);
+			var RX = long2tile(bounds.getNorthEast().lng, z);
+
+			for(var y = TY; y <= BY; y++) {
+				for(var x = LX; x <= RX; x++) {
+					if(isTileInSelection(getTileRect(x, y, z))) {
+						total++;
+					}
+				}
+			}
 		}
 
-		return allTiles;
+		return total;
+	}
+
+	function createTileBatchIterator(minZoom, maxZoom, batchSize) {
+		var zoom = minZoom;
+		var bounds = getBounds();
+		var range = null;
+		var x = 0;
+		var y = 0;
+
+		function setRangeForZoom() {
+			if(zoom > maxZoom) {
+				range = null;
+				return;
+			}
+
+			range = {
+				TY: lat2tile(bounds.getNorthEast().lat, zoom),
+				LX: long2tile(bounds.getSouthWest().lng, zoom),
+				BY: lat2tile(bounds.getSouthWest().lat, zoom),
+				RX: long2tile(bounds.getNorthEast().lng, zoom),
+			};
+			x = range.LX;
+			y = range.TY;
+		}
+
+		setRangeForZoom();
+
+		return function nextBatch() {
+			var batch = [];
+
+			while(range && batch.length < batchSize) {
+				var rect = getTileRect(x, y, zoom);
+				if(isTileInSelection(rect)) {
+					batch.push({
+						x: x,
+						y: y,
+						z: zoom,
+					});
+				}
+
+				x++;
+				if(x > range.RX) {
+					x = range.LX;
+					y++;
+				}
+				if(y > range.BY) {
+					zoom++;
+					setRangeForZoom();
+				}
+			}
+
+			return batch;
+		}
 	}
 
 	function removeGrid() {
@@ -472,6 +606,14 @@ $(function() {
 	function previewGrid() {
 
 		var maxZoom = getMaxZoom();
+		var totalTiles = countGridTiles(getMinZoom(), getMaxZoom());
+
+		if(totalTiles > MAX_GRID_PREVIEW_TILES) {
+			removeGrid();
+			M.toast({html: 'Total ' + totalTiles.toLocaleString() + ' tiles in the region. Grid preview skipped for large selections.', displayLength: 7000})
+			return;
+		}
+
 		var grid = getGrid(maxZoom);
 
 		var pointsCollection = []
@@ -498,14 +640,13 @@ $(function() {
 			}
 		});
 
-		var totalTiles = getAllGridTiles().length;
 		M.toast({html: 'Total ' + totalTiles.toLocaleString() + ' tiles in the region.', displayLength: 5000})
 
 	}
 
 	function previewRect(rectInfo) {
 
-		var array = getArrayByBounds(rectInfo.rect);
+		var array = getArrayByBounds(getTileRect(rectInfo.x, rectInfo.y, rectInfo.z));
 
 		var id = "temp-" + rectInfo.x + '-' + rectInfo.y + '-' + rectInfo.z;
 
@@ -613,6 +754,7 @@ $(function() {
 		data.append('outputFile', session.outputFile)
 		data.append('outputType', session.outputType)
 		data.append('outputScale', session.outputScale)
+		data.append('tileScheme', session.tileScheme)
 		data.append('source', session.source)
 		data.append('timestamp', session.timestamp)
 		data.append('bounds', session.boundsArray.join(","))
@@ -627,6 +769,10 @@ $(function() {
 		data.append('y', item.y)
 		data.append('z', item.z)
 		data.append('quad', generateQuadKey(item.x, item.y, item.z))
+		if(session.previewCounter % PREVIEW_TILE_INTERVAL == 0) {
+			data.append('preview', '1')
+		}
+		session.previewCounter++;
 
 		return data;
 	}
@@ -636,7 +782,11 @@ $(function() {
 	}
 
 	function addFailedTile(session, item) {
-		session.failedTiles[tileKey(item)] = item;
+		session.failedTiles[tileKey(item)] = {
+			x: item.x,
+			y: item.y,
+			z: item.z,
+		};
 	}
 
 	function removeFailedTile(session, item) {
@@ -739,9 +889,18 @@ $(function() {
 		updateRetryButton(session);
 	}
 
-	async function downloadTileBatch(session, tiles) {
-		var completed = 0;
-		updateProgress(0, tiles.length);
+	function trackRequest(request) {
+		var requestId = requestSequence++;
+		requests[requestId] = request;
+		return requestId;
+	}
+
+	function untrackRequest(requestId) {
+		delete requests[requestId];
+	}
+
+	async function downloadTileBatch(session, tiles, totalTiles) {
+		updateProgress(session.completedTiles, totalTiles);
 
 		return new Promise(function(resolve) {
 			async.eachLimit(tiles, session.numThreads, function(item, done) {
@@ -800,21 +959,36 @@ $(function() {
 						logItem(item.x, item.y, item.z, getAjaxErrorMessage(data, "Error while relaying tile"));
 
 					}).always(function() {
-						completed++;
+						session.completedTiles++;
 
 						removeLayer(boxLayer);
-						updateProgress(completed, tiles.length);
+						updateProgress(session.completedTiles, totalTiles);
+						untrackRequest(requestId);
 
 						done();
 					});
 
-					requests.push(request);
+					var requestId = trackRequest(request);
 				});
 
 			}, function() {
 				resolve();
 			});
 		});
+	}
+
+	async function downloadTilesStream(session) {
+		var nextBatch = createTileBatchIterator(session.minZoom, session.maxZoom, TILE_BATCH_SIZE);
+
+		while(!cancellationToken) {
+			var tiles = nextBatch();
+			if(tiles.length == 0) {
+				break;
+			}
+
+			await downloadTileBatch(session, tiles, session.totalTiles);
+			tiles.length = 0;
+		}
 	}
 
 	async function finalizeDownload(session) {
@@ -909,7 +1083,8 @@ $(function() {
 		setDownloadControlsRunning("STOP");
 		logItemRaw("Retrying " + failedTiles.length.toLocaleString() + " failed tile(s)");
 
-		await downloadTileBatch(currentDownload, failedTiles);
+		currentDownload.completedTiles = 0;
+		await downloadTileBatch(currentDownload, failedTiles, failedTiles.length);
 
 		if(cancellationToken) {
 			return;
@@ -954,22 +1129,27 @@ $(function() {
 		M.Toast.dismissAll();
 
 		var timestamp = Date.now().toString();
-		var allTiles = getAllGridTiles();
 		var bounds = getBounds();
+		var minZoom = getMinZoom();
+		var maxZoom = getMaxZoom();
+		var totalTiles = countGridTiles(minZoom, maxZoom);
 
 		currentDownload = {
 			timestamp: timestamp,
-			allTiles: allTiles,
 			numThreads: parseInt($("#parallel-threads-box").val()),
 			outputDirectory: $("#output-directory-box").val(),
 			outputFile: $("#output-file-box").val(),
 			outputType: $("#output-type").val(),
 			outputScale: $("#output-scale").val(),
+			tileScheme: getTileScheme(),
 			source: $("#source-box").val(),
-			minZoom: getMinZoom(),
-			maxZoom: getMaxZoom(),
+			minZoom: minZoom,
+			maxZoom: maxZoom,
+			totalTiles: totalTiles,
+			completedTiles: 0,
+			previewCounter: 0,
 			boundsArray: [bounds.getSouthWest().lng, bounds.getSouthWest().lat, bounds.getNorthEast().lng, bounds.getNorthEast().lat],
-			centerArray: [bounds.getCenter().lng, bounds.getCenter().lat, getMaxZoom()],
+			centerArray: [bounds.getCenter().lng, bounds.getCenter().lat, maxZoom],
 			failedTiles: {},
 			rateLimitWarned: false,
 			started: false
@@ -995,7 +1175,7 @@ $(function() {
 			return;
 		}
 
-		await downloadTileBatch(currentDownload, allTiles);
+		await downloadTilesStream(currentDownload);
 
 		if(cancellationToken) {
 			return;
@@ -1043,7 +1223,12 @@ $(function() {
 	function logItemRaw(text) {
 
 		var logger = $('#log-view');
-		logger.val(logger.val() + '\n' + text);
+		var lines = logger.val() ? logger.val().split('\n') : [];
+		lines.push(text);
+		if(lines.length > MAX_LOG_LINES) {
+			lines = lines.slice(lines.length - MAX_LOG_LINES);
+		}
+		logger.val(lines.join('\n'));
 
 		logger.scrollTop(logger[0].scrollHeight);
 	}
@@ -1064,14 +1249,15 @@ $(function() {
 		isDownloadPaused = false;
 		resolvePausedDownloads();
 
-		for(var i =0 ; i < requests.length; i++) {
-			var request = requests[i];
+		for(var requestId in requests) {
+			var request = requests[requestId];
 			try {
 				request.abort();
 			} catch(e) {
 
 			}
 		}
+		requests = [];
 
 		$("#main-sidebar").show();
 		$("#download-sidebar").hide();

@@ -71,6 +71,7 @@ class Utils:
 		replaceMap = {
 			"x": str(x),
 			"y": str(y),
+			"xyzY": str(y),
 			"tmsY": str(tmsY),
 			"z": str(z),
 			"scale:22": str(scale22),

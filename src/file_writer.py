@@ -26,7 +26,7 @@ class FileWriter:
 		return directory
 
 	@staticmethod
-	def addMetadata(lock, path, file, name, description, format, bounds, center, minZoom, maxZoom, profile="mercator", tileSize=256):
+	def addMetadata(lock, path, file, name, description, format, bounds, center, minZoom, maxZoom, profile="mercator", tileSize=256, tileScheme="xyz"):
 
 		FileWriter.ensureDirectory(lock, path)
 
@@ -40,7 +40,7 @@ class FileWriter:
 			("maxzoom", maxZoom), 
 			("profile", profile), 
 			("tilesize", str(tileSize)), 
-			("scheme", "xyz"), 
+			("scheme", tileScheme),
 			("generator", "EliteMapper by Visor Dynamics"),
 			("type", "overlay"),
 			("attribution", "EliteMapper by Visor Dynamics"),
@@ -52,7 +52,7 @@ class FileWriter:
 		return
 
 	@staticmethod
-	def addTile(lock, filePath, sourcePath, x, y, z, outputScale):
+	def addTile(lock, filePath, sourcePath, x, y, z, outputScale, tileScheme="xyz"):
 
 		fileDirectory = os.path.dirname(filePath)
 		FileWriter.ensureDirectory(lock, fileDirectory)
@@ -62,11 +62,11 @@ class FileWriter:
 		return
 
 	@staticmethod
-	def exists(filePath, x, y, z):
+	def exists(filePath, x, y, z, tileScheme="xyz"):
 		return os.path.isfile(filePath)
 
 
 	@staticmethod
-	def close(lock, path, file, minZoom, maxZoom):
+	def close(lock, path, file, minZoom, maxZoom, tileScheme="xyz"):
 		#TODO recalculate bounds and center
 		return

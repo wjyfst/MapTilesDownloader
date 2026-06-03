@@ -27,7 +27,7 @@ class MbtilesWriter:
 
 
 	@staticmethod
-	def addMetadata(lock, path, file, name, description, format, bounds, center, minZoom, maxZoom, profile="mercator", tileSize=256):
+	def addMetadata(lock, path, file, name, description, format, bounds, center, minZoom, maxZoom, profile="mercator", tileSize=256, tileScheme="tms"):
 
 		MbtilesWriter.ensureDirectory(lock, path)
 
@@ -59,7 +59,7 @@ class MbtilesWriter:
 				("maxzoom", maxZoom), 
 				("profile", profile), 
 				("tilesize", str(tileSize)), 
-				("scheme", "tms"), 
+				("scheme", tileScheme),
 				("generator", "Map Tiles Downloader via AliFlux"),
 				("type", "overlay"),
 				("attribution", "Map Tiles Downloader via AliFlux"),
@@ -72,12 +72,18 @@ class MbtilesWriter:
 		
 
 	@staticmethod
-	def addTile(lock, filePath, sourcePath, x, y, z, outputScale):
+	def storageY(y, z, tileScheme):
+		if tileScheme == "tms":
+			return (2 ** z) - y - 1
+		return y
+
+	@staticmethod
+	def addTile(lock, filePath, sourcePath, x, y, z, outputScale, tileScheme="tms"):
 
 		fileDirectory = os.path.dirname(filePath)
 		MbtilesWriter.ensureDirectory(lock, fileDirectory)
 
-		invertedY = (2 ** z) - y - 1
+		storageY = MbtilesWriter.storageY(y, z, tileScheme)
 
 		tileData = []
 		with open(sourcePath, "rb") as readFile:
@@ -89,7 +95,7 @@ class MbtilesWriter:
 			connection = sqlite3.connect(filePath, check_same_thread=False)
 			c = connection.cursor()
 			c.execute("INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);", [
-				z, x, invertedY, tileData
+				z, x, storageY, tileData
 			])
 
 			connection.commit()
@@ -101,15 +107,15 @@ class MbtilesWriter:
 		return
 
 	@staticmethod
-	def exists(filePath, x, y, z):
-		invertedY = (2 ** z) - y - 1
+	def exists(filePath, x, y, z, tileScheme="tms"):
+		storageY = MbtilesWriter.storageY(y, z, tileScheme)
 
 		if(os.path.exists(filePath)):
 			
 			connection = sqlite3.connect(filePath, check_same_thread=False)
 			c = connection.cursor()
 
-			c.execute("SELECT COUNT(*) FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ? LIMIT 1", (z, x, invertedY))
+			c.execute("SELECT COUNT(*) FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ? LIMIT 1", (z, x, storageY))
 
 			result = c.fetchone()
 
@@ -120,24 +126,28 @@ class MbtilesWriter:
 
 
 	@staticmethod
-	def close(lock, path, file, minZoom, maxZoom):
+	def close(lock, path, file, minZoom, maxZoom, tileScheme="tms"):
 
 		connection = sqlite3.connect(file, check_same_thread=False)
 		c = connection.cursor()
 
 		c.execute("SELECT min(tile_row), max(tile_row), min(tile_column), max(tile_column) from tiles WHERE zoom_level = ?", [maxZoom])
 
-		minY, maxY, minX, maxX = c.fetchone()
-		minY = (2 ** maxZoom) - minY - 1
-		maxY = (2 ** maxZoom) - maxY - 1
+		minRow, maxRow, minX, maxX = c.fetchone()
+		if tileScheme == "tms":
+			xyzMinY = (2 ** maxZoom) - maxRow - 1
+			xyzMaxY = (2 ** maxZoom) - minRow - 1
+		else:
+			xyzMinY = minRow
+			xyzMaxY = maxRow
 
-		minLat, minLon = Utils.num2deg(minX, minY, maxZoom)
-		maxLat, maxLon = Utils.num2deg(maxX+1, maxY+1, maxZoom)
+		northLat, minLon = Utils.num2deg(minX, xyzMinY, maxZoom)
+		southLat, maxLon = Utils.num2deg(maxX+1, xyzMaxY+1, maxZoom)
 
-		bounds = [minLon, minLat, maxLon, maxLat]
+		bounds = [minLon, southLat, maxLon, northLat]
 		boundsString = ','.join(map(str, bounds))
 
-		center = [(minLon + maxLon)/2, (minLat + maxLat)/2, maxZoom]
+		center = [(minLon + maxLon)/2, (southLat + northLat)/2, maxZoom]
 		centerString = ','.join(map(str, center))
 	
 		c.execute("UPDATE metadata SET value = ? WHERE name = 'bounds'", [boundsString])

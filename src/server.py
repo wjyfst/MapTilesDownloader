@@ -129,6 +129,34 @@ class serverHandler(BaseHTTPRequestHandler):
 			raise ValueError("Missing form field: " + key)
 		return postvars[key][0]
 
+	def optionalFormValue(self, postvars, key, default):
+		if key not in postvars or len(postvars[key]) == 0:
+			return default
+		return postvars[key][0]
+
+	def tileScheme(self, postvars):
+		scheme = str(self.optionalFormValue(postvars, 'tileScheme', 'xyz')).lower()
+		if scheme not in ["xyz", "tms"]:
+			raise ValueError("Invalid tileScheme: " + scheme)
+		return scheme
+
+	def replaceTilePlaceholders(self, value, x, y, z, quad, timestamp, tileScheme):
+		tmsY = (2 ** z) - y - 1
+		schemeY = tmsY if tileScheme == "tms" else y
+		replaceMap = {
+			"x": str(x),
+			"y": str(schemeY),
+			"xyzY": str(y),
+			"tmsY": str(tmsY),
+			"z": str(z),
+			"quad": quad,
+			"timestamp": str(timestamp),
+		}
+
+		for key, replacement in replaceMap.items():
+			value = value.replace("{" + key + "}", replacement)
+		return value
+
 	def do_POST(self):
 		try:
 			return self._do_POST()
@@ -164,20 +192,11 @@ class serverHandler(BaseHTTPRequestHandler):
 			outputFile = str(postvars['outputFile'][0])
 			outputType = str(postvars['outputType'][0])
 			outputScale = int(postvars['outputScale'][0])
+			tileScheme = self.tileScheme(postvars)
 			source = str(postvars['source'][0])
-
-			replaceMap = {
-				"x": str(x),
-				"y": str(y),
-				"z": str(z),
-				"quad": quad,
-				"timestamp": str(timestamp),
-			}
-
-			for key, value in replaceMap.items():
-				newKey = str("{" + str(key) + "}")
-				outputDirectory = outputDirectory.replace(newKey, value)
-				outputFile = outputFile.replace(newKey, value)
+			includePreview = self.optionalFormValue(postvars, 'preview', '0') == '1'
+			outputDirectory = self.replaceTilePlaceholders(outputDirectory, x, y, z, quad, timestamp, tileScheme)
+			outputFile = self.replaceTilePlaceholders(outputFile, x, y, z, quad, timestamp, tileScheme)
 
 			result = {}
 
@@ -185,7 +204,7 @@ class serverHandler(BaseHTTPRequestHandler):
 
 			print("\n")
 
-			if self.writerByType(outputType).exists(filePath, x, y, z):
+			if self.writerByType(outputType).exists(filePath, x, y, z, tileScheme):
 				result["code"] = 200
 				result["message"] = 'Tile already exists'
 
@@ -201,10 +220,11 @@ class serverHandler(BaseHTTPRequestHandler):
 				print("HIT: " + source + "\n" + "RETURN: " + str(result["code"]))
 
 				if os.path.isfile(tempFilePath):
-					self.writerByType(outputType).addTile(lock, filePath, tempFilePath, x, y, z, outputScale)
+					self.writerByType(outputType).addTile(lock, filePath, tempFilePath, x, y, z, outputScale, tileScheme)
 
-					with open(tempFilePath, "rb") as image_file:
-						result["image"] = base64.b64encode(image_file.read()).decode("utf-8")
+					if includePreview:
+						with open(tempFilePath, "rb") as image_file:
+							result["image"] = base64.b64encode(image_file.read()).decode("utf-8")
 
 					os.remove(tempFilePath)
 
@@ -230,6 +250,7 @@ class serverHandler(BaseHTTPRequestHandler):
 			minZoom = int(self.formValue(postvars, 'minZoom'))
 			maxZoom = int(self.formValue(postvars, 'maxZoom'))
 			timestamp = int(self.formValue(postvars, 'timestamp'))
+			tileScheme = self.tileScheme(postvars)
 			bounds = str(self.formValue(postvars, 'bounds'))
 			boundsArray = list(map(float, bounds.split(",")))
 			center = str(self.formValue(postvars, 'center'))
@@ -248,7 +269,7 @@ class serverHandler(BaseHTTPRequestHandler):
 
 			filePath = os.path.join(BASE_DIR, "output", outputDirectory, outputFile)
 
-			writer.addMetadata(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, outputFile, "Map Tiles Downloader via AliFlux", "png", boundsArray, centerArray, minZoom, maxZoom, "mercator", 256 * outputScale)
+			writer.addMetadata(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, outputFile, "Map Tiles Downloader via AliFlux", "png", boundsArray, centerArray, minZoom, maxZoom, "mercator", 256 * outputScale, tileScheme)
 
 			result = {}
 			result["code"] = 200
@@ -269,6 +290,7 @@ class serverHandler(BaseHTTPRequestHandler):
 			minZoom = int(postvars['minZoom'][0])
 			maxZoom = int(postvars['maxZoom'][0])
 			timestamp = int(postvars['timestamp'][0])
+			tileScheme = self.tileScheme(postvars)
 			bounds = str(postvars['bounds'][0])
 			boundsArray = map(float, bounds.split(","))
 			center = str(postvars['center'][0])
@@ -285,7 +307,7 @@ class serverHandler(BaseHTTPRequestHandler):
 
 			filePath = os.path.join(BASE_DIR, "output", outputDirectory, outputFile)
 
-			self.writerByType(outputType).close(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, minZoom, maxZoom)
+			self.writerByType(outputType).close(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, minZoom, maxZoom, tileScheme)
 
 			result = {}
 			result["code"] = 200

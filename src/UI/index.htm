@@ -69,6 +69,28 @@
 			</p>
 		</div>
 
+		<div class='sidebar-section row'>
+			<div class="input-field col s6">
+				<input id="bounds-west-box" type="text"/>
+				<label for="bounds-west-box">West lng</label>
+			</div>
+			<div class="input-field col s6">
+				<input id="bounds-south-box" type="text"/>
+				<label for="bounds-south-box">South lat</label>
+			</div>
+			<div class="input-field col s6">
+				<input id="bounds-east-box" type="text"/>
+				<label for="bounds-east-box">East lng</label>
+			</div>
+			<div class="input-field col s6">
+				<input id="bounds-north-box" type="text"/>
+				<label for="bounds-north-box">North lat</label>
+			</div>
+			<div class='center-align col s12'>
+				<a class="waves-effect waves-light z-depth-0 btn-small orange darken-3" id='bounds-apply-button'>Use Bounds</a>
+			</div>
+		</div>
+
 		<div class='step-number'>
 			3
 		</div>
@@ -99,6 +121,16 @@
 
 					<ul id='sources' class='dropdown-content'>
 					</ul>
+				</div>
+			</div>
+
+			<div class="row">
+				<div class="input-field col s12">
+					<select id="tile-scheme" type="text">
+						<option value="xyz" selected>XYZ</option>
+						<option value="tms">TMS</option>
+					</select>
+					<label for="tile-scheme">Tile scheme</label>
 				</div>
 			</div>
 
