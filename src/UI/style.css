@@ -14,7 +14,7 @@ html, body {
 }
 
 .sidebar {
-	width: 340px;
+	width: 350px;
 	height: calc(100% - 120px);
 	height: 100%;
 	position: absolute;
@@ -30,15 +30,14 @@ html, body {
 	margin-left:40px;
 	margin-top: 0.5em;
 	margin-bottom: 0.5em;
-	width: calc(100% - 40px);
+	width: calc(100% - 10px);
 }
 
 .bottom-button {
-	position: absolute;
-	bottom: 20px;
-	left: 60px;
-	width: 260px;
-	display: block;
+    left: 30px;
+    width: 260px;
+    display: block;
+    margin-bottom: 20px;
 }
 
 .secondary-bottom-button,
