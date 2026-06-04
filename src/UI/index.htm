@@ -162,6 +162,23 @@
 				<label for="output-directory-box">Output directory</label>
 			</div>
 
+			<div class="col s12">
+				<label>
+					<input type="checkbox" id="continue-download-checkbox" />
+					<span>Continue existing directory</span>
+				</label>
+			</div>
+
+			<div id="continue-download-field" style="display:none;">
+				<div class="input-field col s9">
+					<input id="continue-download-path" type="text" placeholder="E:\path\to\downloaded-folder" />
+					<label for="continue-download-path">Downloaded folder path</label>
+				</div>
+				<div class="col s3">
+					<a class="waves-effect waves-light z-depth-0 btn-small cyan darken-2" id="choose-continue-directory-button">Browse</a>
+				</div>
+			</div>
+
 			<div class="input-field col s12">
 				<select id="output-type" type="text">
 					<option value="directory">Directory</option>

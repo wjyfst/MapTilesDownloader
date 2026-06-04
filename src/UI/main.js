@@ -19,6 +19,7 @@ $(function() {
 	var MAX_LOG_LINES = 1000;
 	var PREVIEW_TILE_INTERVAL = 25;
 	var MAX_GRID_PREVIEW_TILES = 5000;
+	var continueDirectoryState = null;
 
 	var chinaDarkSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=4&scene=0&version=347";
 	var chinaLightSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=0&scene=0&version=347";
@@ -56,6 +57,14 @@ $(function() {
 
 	function getTileScheme() {
 		return $("#tile-scheme").val() || "xyz";
+	}
+
+	function refreshSelect(selector) {
+		var select = $(selector);
+		if(select.formSelect) {
+			select.formSelect('destroy');
+			select.formSelect();
+		}
 	}
 
 	function getMapPreviewSource(url) {
@@ -235,6 +244,36 @@ $(function() {
 
 		var outputFileBox = $("#output-file-box")
 
+		function setContinueMode(enabled) {
+			$("#continue-download-field").toggle(enabled);
+
+			if(enabled) {
+				$("#output-type").val("directory");
+				outputFileBox.val("{z}/{x}/{y}.png");
+				$("#output-type").prop("disabled", true);
+				$("#output-directory-box").prop("disabled", true);
+				$("#output-file-box").prop("disabled", true);
+				$("#tile-scheme").prop("disabled", true);
+				$("#output-scale").prop("disabled", true);
+				refreshSelect("#output-type");
+				refreshSelect("#tile-scheme");
+				refreshSelect("#output-scale");
+			} else {
+				continueDirectoryState = null;
+				$("#continue-download-path").val("");
+				$("#output-type").prop("disabled", false);
+				$("#output-directory-box").prop("disabled", false);
+				$("#output-file-box").prop("disabled", false);
+				$("#tile-scheme").prop("disabled", false);
+				$("#output-scale").prop("disabled", false);
+				refreshSelect("#output-type");
+				refreshSelect("#tile-scheme");
+				refreshSelect("#output-scale");
+			}
+
+			updateStitchCheckboxState();
+		}
+
 		function updateStitchCheckboxState() {
 			var outputType = $("#output-type").val();
 			if (outputType !== "directory") {
@@ -256,8 +295,129 @@ $(function() {
 			updateStitchCheckboxState();
 		})
 
+		$("#continue-download-checkbox").change(function() {
+			setContinueMode($(this).is(":checked"));
+		})
+
+		$("#continue-download-path").change(function() {
+			loadContinueDirectoryPath($(this).val()).catch(function() {});
+		})
+
+		$("#choose-continue-directory-button").click(function() {
+			chooseContinueDirectory();
+		})
+
 		updateStitchCheckboxState();
 
+	}
+
+	function applyDownloadedConfig(session) {
+		if(session.bounds && session.bounds.length == 4) {
+			setRectangleFromBounds(session.bounds[0], session.bounds[1], session.bounds[2], session.bounds[3], false);
+		}
+
+		if(session.minZoom !== undefined && session.minZoom !== null && !isNaN(parseInt(session.minZoom))) {
+			$("#zoom-from-box").val(session.minZoom);
+		}
+		if(session.maxZoom !== undefined && session.maxZoom !== null && !isNaN(parseInt(session.maxZoom))) {
+			$("#zoom-to-box").val(session.maxZoom);
+		}
+		if(session.source) {
+			$("#source-box").val(session.source);
+			updateMapTileSource(session.source);
+		}
+		if(session.outputFile) {
+			$("#output-file-box").val(session.outputFile);
+		}
+		if(session.tileScheme) {
+			$("#tile-scheme").val(session.tileScheme);
+			refreshSelect("#tile-scheme");
+		}
+		if(session.outputScale) {
+			$("#output-scale").val(session.outputScale.toString());
+			refreshSelect("#output-scale");
+		}
+
+		M.updateTextFields();
+	}
+
+	function createContinueDirectoryFormData(path) {
+		var data = new FormData();
+		data.append('outputDirectory', path);
+		return data;
+	}
+
+	async function loadContinueDirectoryPath(path) {
+		path = (path || "").trim();
+		if(!path) {
+			continueDirectoryState = null;
+			return;
+		}
+
+		continueDirectoryState = {
+			directoryPath: path,
+		};
+
+		$("#output-directory-box").val(path);
+		M.updateTextFields();
+
+		try {
+			var result = await $.ajax({
+				url: "/continue-directory-config",
+				async: true,
+				timeout: 30 * 1000,
+				type: "post",
+				contentType: false,
+				processData: false,
+				data: createContinueDirectoryFormData(path),
+				dataType: 'json',
+			});
+
+			continueDirectoryState = {
+				directoryPath: result.outputDirectory || path,
+			};
+			$("#output-directory-box").val(continueDirectoryState.directoryPath);
+
+			if(result.session) {
+				applyDownloadedConfig(result.session);
+			}
+
+			if(result.configSource == "download-session.json") {
+				M.toast({html: 'Loaded download-session.json from selected directory.', displayLength: 3000});
+			} else if(result.configSource == "metadata.json") {
+				M.toast({html: 'Loaded metadata.json from selected directory.', displayLength: 3000});
+			} else {
+				M.toast({html: 'No download-session.json or metadata.json found. Current form settings will be used.', displayLength: 7000});
+			}
+		} catch(error) {
+			var message = getAjaxErrorMessage(error, "Could not read selected directory config.");
+			M.toast({html: message, displayLength: 7000});
+			continueDirectoryState = null;
+			throw error;
+		}
+	}
+
+	async function chooseContinueDirectory() {
+		try {
+			var result = await $.ajax({
+				url: "/choose-continue-directory",
+				async: true,
+				timeout: 5 * 60 * 1000,
+				type: "get",
+				dataType: 'json',
+			});
+
+			if(!result.path) {
+				return;
+			}
+
+			$("#continue-download-path").val(result.path);
+			M.updateTextFields();
+			await loadContinueDirectoryPath(result.path);
+		} catch(error) {
+			var message = getAjaxErrorMessage(error, "Could not choose downloaded directory.");
+			M.toast({html: message, displayLength: 7000});
+		}
 	}
 
 	function pollStitchStatus() {
@@ -335,17 +495,7 @@ $(function() {
 		return value;
 	}
 
-	function setRectangleFromBoundsInput() {
-		var west = parseBoundsInputValue("#bounds-west-box");
-		var south = parseBoundsInputValue("#bounds-south-box");
-		var east = parseBoundsInputValue("#bounds-east-box");
-		var north = parseBoundsInputValue("#bounds-north-box");
-
-		if(west === null || south === null || east === null || north === null) {
-			M.toast({html: 'Enter west, south, east, and north bounds.', displayLength: 5000})
-			return;
-		}
-
+	function setRectangleFromBounds(west, south, east, north, showToast) {
 		if(west < -180 || west > 180 || east < -180 || east > 180 || south < -85.0511 || south > 85.0511 || north < -85.0511 || north > 85.0511) {
 			M.toast({html: 'Bounds are outside the supported Web Mercator range.', displayLength: 5000})
 			return;
@@ -357,6 +507,11 @@ $(function() {
 		}
 
 		removeGrid();
+		$("#bounds-west-box").val(west);
+		$("#bounds-south-box").val(south);
+		$("#bounds-east-box").val(east);
+		$("#bounds-north-box").val(north);
+		M.updateTextFields();
 		draw.deleteAll();
 		draw.changeMode('simple_select');
 		draw.add({
@@ -377,8 +532,24 @@ $(function() {
 		map.fitBounds([[west, south], [east, north]], {
 			padding: 40
 		});
-		M.Toast.dismissAll();
-		M.toast({html: 'Region bounds applied.', displayLength: 3000})
+		if(showToast !== false) {
+			M.Toast.dismissAll();
+			M.toast({html: 'Region bounds applied.', displayLength: 3000})
+		}
+	}
+
+	function setRectangleFromBoundsInput() {
+		var west = parseBoundsInputValue("#bounds-west-box");
+		var south = parseBoundsInputValue("#bounds-south-box");
+		var east = parseBoundsInputValue("#bounds-east-box");
+		var north = parseBoundsInputValue("#bounds-north-box");
+
+		if(west === null || south === null || east === null || north === null) {
+			M.toast({html: 'Enter west, south, east, and north bounds.', displayLength: 5000})
+			return;
+		}
+
+		setRectangleFromBounds(west, south, east, north, true);
 	}
 
 	function initializeGridPreview() {
@@ -546,12 +717,14 @@ $(function() {
 		return total;
 	}
 
-	function createTileBatchIterator(minZoom, maxZoom, batchSize) {
+	function createTileBatchIterator(minZoom, maxZoom, batchSize, startOffset) {
 		var zoom = minZoom;
 		var bounds = getBounds();
 		var range = null;
 		var x = 0;
 		var y = 0;
+		var skippedTiles = 0;
+		startOffset = startOffset || 0;
 
 		function setRangeForZoom() {
 			if(zoom > maxZoom) {
@@ -577,11 +750,15 @@ $(function() {
 			while(range && batch.length < batchSize) {
 				var rect = getTileRect(x, y, zoom);
 				if(isTileInSelection(rect)) {
-					batch.push({
-						x: x,
-						y: y,
-						z: zoom,
-					});
+					if(skippedTiles < startOffset) {
+						skippedTiles++;
+					} else {
+						batch.push({
+							x: x,
+							y: y,
+							z: zoom,
+						});
+					}
 				}
 
 				x++;
@@ -978,7 +1155,11 @@ $(function() {
 	}
 
 	async function downloadTilesStream(session) {
-		var nextBatch = createTileBatchIterator(session.minZoom, session.maxZoom, TILE_BATCH_SIZE);
+		if((session.startTileOffset || 0) >= session.totalTiles) {
+			return;
+		}
+
+		var nextBatch = createTileBatchIterator(session.minZoom, session.maxZoom, TILE_BATCH_SIZE, session.startTileOffset || 0);
 
 		while(!cancellationToken) {
 			var tiles = nextBatch();
@@ -989,6 +1170,36 @@ $(function() {
 			await downloadTileBatch(session, tiles, session.totalTiles);
 			tiles.length = 0;
 		}
+	}
+
+	async function scanContinueDirectory(session) {
+		$("#download-phase-title").text("Checking downloaded tiles");
+		$("#download-phase-hint").text("Scanning selected directory in the background...");
+		logItemRaw("Checking existing directory in download order...");
+
+		var request = $.ajax({
+			url: "/scan-continue-directory",
+			async: true,
+			timeout: 10 * 60 * 1000,
+			type: "post",
+			contentType: false,
+			processData: false,
+			data: createDownloadFormData(session),
+			dataType: 'json',
+		});
+		var requestId = trackRequest(request);
+		var result = await request.always(function() {
+			untrackRequest(requestId);
+		});
+
+		session.startTileOffset = result.startTileOffset || 0;
+		session.sparseMissingTiles = result.sparseMissingTiles || [];
+		session.completedTiles = result.completedTiles || 0;
+		updateProgress(session.completedTiles, session.totalTiles);
+		var lastExistingOffset = result.lastExistingOffset !== undefined ? result.lastExistingOffset : -1;
+		logItemRaw("Last existing tile offset: " + lastExistingOffset.toLocaleString());
+		logItemRaw("Resume start offset: " + session.startTileOffset.toLocaleString());
+		logItemRaw("Sparse missing tile(s): " + session.sparseMissingTiles.length.toLocaleString());
 	}
 
 	async function finalizeDownload(session) {
@@ -1114,6 +1325,24 @@ $(function() {
 			return;
 		}
 
+		var continueDirectory = null;
+		if($("#continue-download-checkbox").is(":checked")) {
+			var continueDirectoryPath = ($("#continue-download-path").val() || "").trim();
+			if(!continueDirectoryPath) {
+				M.toast({html: 'Enter a downloaded directory path to continue.', displayLength: 5000});
+				return;
+			}
+
+			if(!continueDirectoryState || continueDirectoryState.directoryPath != continueDirectoryPath) {
+				try {
+					await loadContinueDirectoryPath(continueDirectoryPath);
+				} catch(error) {
+					return;
+				}
+			}
+			continueDirectory = continueDirectoryPath;
+		}
+
 		cancellationToken = false;
 		requests = [];
 		downloadEnded = false;
@@ -1133,13 +1362,20 @@ $(function() {
 		var minZoom = getMinZoom();
 		var maxZoom = getMaxZoom();
 		var totalTiles = countGridTiles(minZoom, maxZoom);
+		var outputDirectory = continueDirectory || $("#output-directory-box").val();
+		var outputFile = $("#output-file-box").val();
+		var outputType = continueDirectory ? "directory" : $("#output-type").val();
+
+		if(continueDirectory) {
+			logItemRaw("Continuing existing directory: " + continueDirectory);
+		}
 
 		currentDownload = {
 			timestamp: timestamp,
 			numThreads: parseInt($("#parallel-threads-box").val()),
-			outputDirectory: $("#output-directory-box").val(),
-			outputFile: $("#output-file-box").val(),
-			outputType: $("#output-type").val(),
+			outputDirectory: outputDirectory,
+			outputFile: outputFile,
+			outputType: outputType,
 			outputScale: $("#output-scale").val(),
 			tileScheme: getTileScheme(),
 			source: $("#source-box").val(),
@@ -1147,6 +1383,9 @@ $(function() {
 			maxZoom: maxZoom,
 			totalTiles: totalTiles,
 			completedTiles: 0,
+			startTileOffset: 0,
+			sparseMissingTiles: [],
+			continueDirectory: continueDirectoryState,
 			previewCounter: 0,
 			boundsArray: [bounds.getSouthWest().lng, bounds.getSouthWest().lat, bounds.getNorthEast().lng, bounds.getNorthEast().lat],
 			centerArray: [bounds.getCenter().lng, bounds.getCenter().lat, maxZoom],
@@ -1173,6 +1412,39 @@ $(function() {
 			M.toast({html: message, displayLength: 8000});
 			setDownloadControlsDone(currentDownload);
 			return;
+		}
+
+		if(continueDirectory) {
+			try {
+				await scanContinueDirectory(currentDownload);
+			} catch(xhr) {
+				if(!cancellationToken) {
+					var message = getAjaxErrorMessage(xhr, "Could not check existing directory.");
+					logItemRaw(message);
+					M.toast({html: message, displayLength: 8000});
+					setDownloadControlsDone(currentDownload);
+				}
+				return;
+			}
+
+			if(cancellationToken) {
+				return;
+			}
+
+			$("#download-phase-title").text("Downloading tiles");
+			$("#download-phase-hint").text("Please wait...");
+
+			if(currentDownload.sparseMissingTiles.length > 0) {
+				logItemRaw("Downloading sparse missing tile(s): " + currentDownload.sparseMissingTiles.length.toLocaleString());
+				await downloadTileBatch(currentDownload, currentDownload.sparseMissingTiles, currentDownload.totalTiles);
+
+				if(cancellationToken) {
+					return;
+				}
+				currentDownload.sparseMissingTiles.length = 0;
+				currentDownload.completedTiles = currentDownload.startTileOffset;
+				updateProgress(currentDownload.completedTiles, currentDownload.totalTiles);
+			}
 		}
 
 		await downloadTilesStream(currentDownload);

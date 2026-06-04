@@ -16,7 +16,6 @@ import string
 import argparse
 import uuid
 import random
-import time
 import json
 import shutil
 import ssl
@@ -25,6 +24,7 @@ import os
 import base64
 import mimetypes
 import traceback
+import math
 
 from file_writer import FileWriter
 from mbtiles_writer import MbtilesWriter
@@ -157,6 +157,193 @@ class serverHandler(BaseHTTPRequestHandler):
 			value = value.replace("{" + key + "}", replacement)
 		return value
 
+	def outputPath(self, outputDirectory, *parts):
+		if os.path.isabs(outputDirectory):
+			return os.path.join(outputDirectory, *parts)
+		return os.path.join(BASE_DIR, "output", outputDirectory, *parts)
+
+	def writeDownloadSession(self, outputDirectory, session):
+		session_dir = self.outputPath(outputDirectory)
+		os.makedirs(session_dir, exist_ok=True)
+		session_path = os.path.join(session_dir, "download-session.json")
+		with open(session_path, "w", encoding="utf-8") as session_file:
+			json.dump(session, session_file, indent=2)
+
+	def parseNumberList(self, value):
+		if isinstance(value, list):
+			return [float(item) for item in value]
+		if value is None or value == "":
+			return None
+		return [float(item) for item in str(value).split(",")]
+
+	def firstMetadataValue(self, metadata, keys, defaultValue=None):
+		for key in keys:
+			if key in metadata and metadata[key] not in [None, ""]:
+				return metadata[key]
+		return defaultValue
+
+	def sessionFromMetadata(self, outputDirectory, metadata):
+		tileSize = int(self.firstMetadataValue(metadata, ["tilesize", "tileSize"], 256))
+		outputScale = max(1, int(tileSize / 256))
+
+		minZoomValue = self.firstMetadataValue(metadata, ["minzoom", "minZoom"])
+		maxZoomValue = self.firstMetadataValue(metadata, ["maxzoom", "maxZoom"])
+		minZoom = int(minZoomValue) if minZoomValue not in [None, ""] else None
+		maxZoom = int(maxZoomValue) if maxZoomValue not in [None, ""] else None
+
+		return {
+			"outputDirectory": outputDirectory,
+			"outputFile": "{z}/{x}/{y}.png",
+			"outputType": "directory",
+			"outputScale": outputScale,
+			"tileScheme": self.firstMetadataValue(metadata, ["scheme", "tileScheme"], "xyz"),
+			"minZoom": minZoom,
+			"maxZoom": maxZoom,
+			"bounds": self.parseNumberList(self.firstMetadataValue(metadata, ["bounds"])),
+			"center": self.parseNumberList(self.firstMetadataValue(metadata, ["center"])),
+		}
+
+	def continueDirectoryConfig(self, postvars):
+		outputDirectory = str(self.formValue(postvars, 'outputDirectory')).strip()
+		directoryPath = self.outputPath(outputDirectory)
+		if not os.path.isdir(directoryPath):
+			raise ValueError("Downloaded directory does not exist: " + directoryPath)
+
+		result = {
+			"code": 200,
+			"outputDirectory": outputDirectory,
+			"configSource": None,
+			"session": None,
+		}
+
+		sessionPath = os.path.join(directoryPath, "download-session.json")
+		if os.path.isfile(sessionPath):
+			with open(sessionPath, "r", encoding="utf-8") as sessionFile:
+				result["session"] = json.load(sessionFile)
+			result["configSource"] = "download-session.json"
+			return result
+
+		metadataPath = os.path.join(directoryPath, "metadata.json")
+		if os.path.isfile(metadataPath):
+			with open(metadataPath, "r", encoding="utf-8") as metadataFile:
+				metadata = json.load(metadataFile)
+			result["session"] = self.sessionFromMetadata(outputDirectory, metadata)
+			result["configSource"] = "metadata.json"
+
+		return result
+
+	def chooseDirectory(self):
+		try:
+			import tkinter as tk
+			from tkinter import filedialog
+
+			root = tk.Tk()
+			root.withdraw()
+			root.attributes("-topmost", True)
+			path = filedialog.askdirectory(title="Select downloaded tile folder")
+			root.destroy()
+			return {
+				"code": 200,
+				"path": path or "",
+			}
+		except Exception as e:
+			return {
+				"code": 500,
+				"message": "Could not open folder picker",
+				"error": str(e),
+			}
+
+	def long2tile(self, lon, zoom):
+		return math.floor((lon + 180) / 360 * math.pow(2, zoom))
+
+	def lat2tile(self, lat, zoom):
+		return math.floor((1 - math.log(math.tan(lat * math.pi / 180) + 1 / math.cos(lat * math.pi / 180)) / math.pi) / 2 * math.pow(2, zoom))
+
+	def tile2long(self, x, zoom):
+		return x / math.pow(2, zoom) * 360 - 180
+
+	def tile2lat(self, y, zoom):
+		n = math.pi - 2 * math.pi * y / math.pow(2, zoom)
+		return 180 / math.pi * math.atan(0.5 * (math.exp(n) - math.exp(-n)))
+
+	def tileIntersectsBounds(self, x, y, z, bounds):
+		west, south, east, north = bounds
+		tile_west = self.tile2long(x, z)
+		tile_east = self.tile2long(x + 1, z)
+		tile_north = self.tile2lat(y, z)
+		tile_south = self.tile2lat(y + 1, z)
+
+		return not (
+			tile_east < west or
+			tile_west > east or
+			tile_north < south or
+			tile_south > north
+		)
+
+	def iterTilesInBounds(self, bounds, minZoom, maxZoom):
+		west, south, east, north = bounds
+		for z in range(minZoom, maxZoom + 1):
+			ty = self.lat2tile(north, z)
+			lx = self.long2tile(west, z)
+			by = self.lat2tile(south, z)
+			rx = self.long2tile(east, z)
+
+			for y in range(ty, by + 1):
+				for x in range(lx, rx + 1):
+					if self.tileIntersectsBounds(x, y, z, bounds):
+						yield {"x": x, "y": y, "z": z}
+
+	def scanContinueDirectory(self, postvars):
+		outputDirectory = str(self.formValue(postvars, 'outputDirectory'))
+		outputFile = str(self.formValue(postvars, 'outputFile'))
+		outputType = str(self.formValue(postvars, 'outputType'))
+		timestamp = int(self.formValue(postvars, 'timestamp'))
+		tileScheme = self.tileScheme(postvars)
+		minZoom = int(self.formValue(postvars, 'minZoom'))
+		maxZoom = int(self.formValue(postvars, 'maxZoom'))
+		bounds = list(map(float, str(self.formValue(postvars, 'bounds')).split(",")))
+
+		if outputType != "directory":
+			raise ValueError("Continue scan only supports directory output")
+
+		writer = self.writerByType(outputType)
+		missingTiles = []
+		lastExistingOffset = -1
+		checkedCount = 0
+
+		for offset, tile in enumerate(self.iterTilesInBounds(bounds, minZoom, maxZoom)):
+			x = int(tile["x"])
+			y = int(tile["y"])
+			z = int(tile["z"])
+			quad = Utils.makeQuadKey(x, y, z)
+			resolvedDirectory = self.replaceTilePlaceholders(outputDirectory, x, y, z, quad, timestamp, tileScheme)
+			resolvedFile = self.replaceTilePlaceholders(outputFile, x, y, z, quad, timestamp, tileScheme)
+			filePath = self.outputPath(resolvedDirectory, resolvedFile)
+
+			checkedCount += 1
+			if writer.exists(filePath, x, y, z, tileScheme):
+				lastExistingOffset = offset
+			else:
+				missingTiles.append({
+					"offset": offset,
+					"tile": tile,
+				})
+
+		startTileOffset = lastExistingOffset + 1
+		sparseMissingTiles = [
+			item["tile"] for item in missingTiles
+			if item["offset"] < startTileOffset
+		]
+
+		return {
+			"code": 200,
+			"checkedCount": checkedCount,
+			"lastExistingOffset": lastExistingOffset,
+			"startTileOffset": startTileOffset,
+			"sparseMissingTiles": sparseMissingTiles,
+			"completedTiles": startTileOffset - len(sparseMissingTiles),
+		}
+
 	def do_POST(self):
 		try:
 			return self._do_POST()
@@ -200,7 +387,7 @@ class serverHandler(BaseHTTPRequestHandler):
 
 			result = {}
 
-			filePath = os.path.join(BASE_DIR, "output", outputDirectory, outputFile)
+			filePath = self.outputPath(outputDirectory, outputFile)
 
 			print("\n")
 
@@ -242,6 +429,14 @@ class serverHandler(BaseHTTPRequestHandler):
 			self.wfile.write(json.dumps(result).encode('utf-8'))
 			return
 
+		elif parts.path == '/continue-directory-config':
+			self.sendJson(self.continueDirectoryConfig(postvars))
+			return
+
+		elif parts.path == '/scan-continue-directory':
+			self.sendJson(self.scanContinueDirectory(postvars))
+			return
+
 		elif parts.path == '/start-download':
 			outputType = str(self.formValue(postvars, 'outputType'))
 			outputScale = int(self.formValue(postvars, 'outputScale'))
@@ -267,9 +462,22 @@ class serverHandler(BaseHTTPRequestHandler):
 				outputDirectory = outputDirectory.replace(newKey, value)
 				outputFile = outputFile.replace(newKey, value)
 
-			filePath = os.path.join(BASE_DIR, "output", outputDirectory, outputFile)
+			filePath = self.outputPath(outputDirectory, outputFile)
 
-			writer.addMetadata(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, outputFile, "Map Tiles Downloader via AliFlux", "png", boundsArray, centerArray, minZoom, maxZoom, "mercator", 256 * outputScale, tileScheme)
+			writer.addMetadata(lock, self.outputPath(outputDirectory), filePath, outputFile, "Map Tiles Downloader via AliFlux", "png", boundsArray, centerArray, minZoom, maxZoom, "mercator", 256 * outputScale, tileScheme)
+			self.writeDownloadSession(outputDirectory, {
+				"timestamp": timestamp,
+				"outputDirectory": outputDirectory,
+				"outputFile": outputFile,
+				"outputType": outputType,
+				"outputScale": outputScale,
+				"tileScheme": tileScheme,
+				"source": str(self.optionalFormValue(postvars, 'source', '')),
+				"minZoom": minZoom,
+				"maxZoom": maxZoom,
+				"bounds": boundsArray,
+				"center": centerArray,
+			})
 
 			result = {}
 			result["code"] = 200
@@ -305,9 +513,9 @@ class serverHandler(BaseHTTPRequestHandler):
 				outputDirectory = outputDirectory.replace(newKey, value)
 				outputFile = outputFile.replace(newKey, value)
 
-			filePath = os.path.join(BASE_DIR, "output", outputDirectory, outputFile)
+			filePath = self.outputPath(outputDirectory, outputFile)
 
-			self.writerByType(outputType).close(lock, os.path.join(BASE_DIR, "output", outputDirectory), filePath, minZoom, maxZoom, tileScheme)
+			self.writerByType(outputType).close(lock, self.outputPath(outputDirectory), filePath, minZoom, maxZoom, tileScheme)
 
 			result = {}
 			result["code"] = 200
@@ -335,7 +543,7 @@ class serverHandler(BaseHTTPRequestHandler):
 			maxZoom = int(postvars['maxZoom'][0])
 
 			outputDirectory = outputDirectory.replace('{timestamp}', str(timestamp))
-			full_output_dir = os.path.join(BASE_DIR, "output", outputDirectory)
+			full_output_dir = self.outputPath(outputDirectory)
 
 			with stitch_job_lock:
 				stitch_job["state"] = "starting"
@@ -355,6 +563,11 @@ class serverHandler(BaseHTTPRequestHandler):
 	def do_GET(self):
 
 		parts = urlparse(self.path)
+
+		if parts.path == '/choose-continue-directory':
+			result = self.chooseDirectory()
+			self.sendJson(result, 500 if result.get("code") != 200 else 200)
+			return
 
 		if parts.path == '/stitch-status':
 			with stitch_job_lock:
