@@ -8,7 +8,7 @@ html, body {
 
 #max-height {
 	height: 100%;
-	width: calc(100% - 302px);
+	width: calc(100% - 370px);
 	display: inline-block;
 	position: relative;
 }
@@ -30,7 +30,6 @@ html, body {
 	margin-left:40px;
 	margin-top: 0.5em;
 	margin-bottom: 0.5em;
-	width: calc(100% - 10px);
 }
 
 .bottom-button {
@@ -42,7 +41,7 @@ html, body {
 
 .secondary-bottom-button,
 .retry-button {
-	bottom: 80px;
+	/*bottom: 80px;*/
 }
 
 #pause-button {

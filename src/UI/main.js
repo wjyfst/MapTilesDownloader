@@ -25,35 +25,40 @@ $(function() {
 	var chinaLightSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={tmsY}&styleid=0&scene=0&version=347";
 	var chinaPreviewSource = "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&styleid=0&scene=0&version=347";
     var GeoQLightSource = "https://thematic.geoq.cn/arcgis/rest/services/ChinaOnlineStreetGray/MapServer/tile/{z}/{y}/{x}"
+	var tiandituConfig = window.tiandituConfig || {};
+	var tiandituKey = typeof tiandituConfig.key === "string" ? tiandituConfig.key.trim() : "";
+	var tiandituKey_esri = typeof tiandituConfig.keyEsri === "string" ? tiandituConfig.keyEsri.trim() : "";
+	var tiandituTileKey = tiandituKey_esri || tiandituKey;
+	var tiandituImgSource = tiandituTileKey ? "https://t1.tianditu.gov.cn/img_w/wmts?tk=" + tiandituTileKey + "&layer=img&style=default&tilematrixset=w&Service=WMTS&Request=GetTile&Version=1.0.0&Format=tiles&TileMatrix={z}&TileCol={x}&TileRow={y}" : null;
+	var tiandituCiaSource = tiandituTileKey ? "https://t1.tianditu.gov.cn/cia_w/wmts?tk=" + tiandituTileKey + "&layer=cia&style=default&tilematrixset=w&Service=WMTS&Request=GetTile&Version=1.0.0&Format=tiles&TileMatrix={z}&TileCol={x}&TileRow={y}" : null;
 	var sources = {
 
 		"Tencent Dark Chinese": chinaDarkSource,
         "Tencent Light Chinese": chinaLightSource,
-        "GeoQ": GeoQLightSource,
-		"div-0": "",
-
-		"Bing Maps": "http://ecn.t0.tiles.virtualearth.net/tiles/r{quad}.jpeg?g=129&mkt=en&stl=H",
-		"Bing Maps Satellite": "http://ecn.t0.tiles.virtualearth.net/tiles/a{quad}.jpeg?g=129&mkt=en&stl=H",
-		"Bing Maps Hybrid": "http://ecn.t0.tiles.virtualearth.net/tiles/h{quad}.jpeg?g=129&mkt=en&stl=H",
-
-		"div-1B": "",
-
-		"Google Maps": "https://mt0.google.com/vt?lyrs=m&x={x}&s=&y={y}&z={z}",
-		"Google Maps Satellite": "https://mt0.google.com/vt?lyrs=s&x={x}&s=&y={y}&z={z}",
-		"Google Maps Hybrid": "https://mt0.google.com/vt?lyrs=h&x={x}&s=&y={y}&z={z}",
-		"Google Maps Terrain": "https://mt0.google.com/vt?lyrs=p&x={x}&s=&y={y}&z={z}",
-
-		"div-2": "",
-
-		"Open Street Maps": "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-		"Open Cycle Maps": "http://a.tile.opencyclemap.org/cycle/{z}/{x}/{y}.png",
-
-		"div-3": "",
-
-		"ESRI World Imagery": "https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-		"Carto Light": "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        "GeoQ": GeoQLightSource
 
 	};
+
+	if(tiandituImgSource && tiandituCiaSource) {
+		sources["\u5929\u5730\u56fe\u5f71\u50cf"] = tiandituImgSource;
+		sources["\u5929\u5730\u56fe\u6ce8\u8bb0"] = tiandituCiaSource;
+	}
+
+	sources["div-0"] = "";
+	sources["Bing Maps"] = "http://ecn.t0.tiles.virtualearth.net/tiles/r{quad}.jpeg?g=129&mkt=en&stl=H";
+	sources["Bing Maps Satellite"] = "http://ecn.t0.tiles.virtualearth.net/tiles/a{quad}.jpeg?g=129&mkt=en&stl=H";
+	sources["Bing Maps Hybrid"] = "http://ecn.t0.tiles.virtualearth.net/tiles/h{quad}.jpeg?g=129&mkt=en&stl=H";
+	sources["div-1B"] = "";
+	sources["Google Maps"] = "https://mt0.google.com/vt?lyrs=m&x={x}&s=&y={y}&z={z}";
+	sources["Google Maps Satellite"] = "https://mt0.google.com/vt?lyrs=s&x={x}&s=&y={y}&z={z}";
+	sources["Google Maps Hybrid"] = "https://mt0.google.com/vt?lyrs=h&x={x}&s=&y={y}&z={z}";
+	sources["Google Maps Terrain"] = "https://mt0.google.com/vt?lyrs=p&x={x}&s=&y={y}&z={z}";
+	sources["div-2"] = "";
+	sources["Open Street Maps"] = "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png";
+	sources["Open Cycle Maps"] = "http://a.tile.opencyclemap.org/cycle/{z}/{x}/{y}.png";
+	sources["div-3"] = "";
+	sources["ESRI World Imagery"] = "https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+	sources["Carto Light"] = "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png";
 
 	function getTileScheme() {
 		return $("#tile-scheme").val() || "xyz";

@@ -9,3 +9,4 @@ __pycache__/
 *.tif
 *.tiff
 /.idea/
+src/UI/tianditu.config.js
